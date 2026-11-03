@@ -1,0 +1,112 @@
+<header class="top">
+  <div>
+    <h1>Load Balancing Lab</h1>
+    <p class="sub">ASP.NET Core 10 · Angular 22 · Kubernetes on Azure</p>
+  </div>
+  <span class="status" [class.live]="running()">{{ running() ? 'Running' : 'Idle' }}</span>
+</header>
+
+<main class="grid">
+  <section class="card controls">
+    <h2>Traffic generator</h2>
+
+    <label>
+      Endpoint
+      <select [ngModel]="endpoint()" (ngModelChange)="endpoint.set($event)" [disabled]="running()">
+        <option value="whoami">/api/whoami — instant</option>
+        <option value="delay">/api/delay — async wait</option>
+        <option value="work">/api/work — CPU burn (drives HPA)</option>
+      </select>
+    </label>
+
+    <div class="row">
+      <label>
+        Requests
+        <input type="number" min="1" max="100000" [ngModel]="total()" (ngModelChange)="total.set(+$event)" [disabled]="running()" />
+      </label>
+      <label>
+        Concurrency
+        <input type="number" min="1" max="200" [ngModel]="concurrency()" (ngModelChange)="concurrency.set(+$event)" [disabled]="running()" />
+      </label>
+    </div>
+
+    @if (endpoint() !== 'whoami') {
+      <label>
+        Duration per request (ms)
+        <input type="number" min="1" max="5000" [ngModel]="ms()" (ngModelChange)="ms.set(+$event)" [disabled]="running()" />
+      </label>
+    }
+
+    <label class="check">
+      <input type="checkbox" [ngModel]="continuous()" (ngModelChange)="continuous.set($event)" />
+      Keep running until stopped
+    </label>
+
+    <div class="actions">
+      @if (!running()) {
+        <button class="primary" (click)="run()">Send traffic</button>
+      } @else {
+        <button class="danger" (click)="stop()">Stop</button>
+      }
+      <button (click)="reset()" [disabled]="running()">Reset</button>
+    </div>
+  </section>
+
+  <section class="card stats">
+    <div class="stat"><span>Requests</span><strong>{{ hits().length | number }}</strong></div>
+    <div class="stat"><span>Replicas seen</span><strong>{{ pods().length }}</strong></div>
+    <div class="stat"><span>Throughput</span><strong>{{ rps() | number: '1.0-1' }}<small> req/s</small></strong></div>
+    <div class="stat"><span>p95 latency</span><strong>{{ p95() | number: '1.0-0' }}<small> ms</small></strong></div>
+    <div class="stat" [class.bad]="errorCount() > 0"><span>Errors</span><strong>{{ errorCount() | number }}</strong></div>
+    <div class="stat" [class.bad]="imbalance() > 0.25">
+      <span title="Coefficient of variation of per-replica counts. 0 = perfectly even.">Imbalance</span>
+      <strong>{{ imbalance() * 100 | number: '1.0-0' }}<small>%</small></strong>
+    </div>
+  </section>
+
+  <section class="card dist">
+    <h2>Distribution by replica</h2>
+    @if (pods().length === 0) {
+      <p class="empty">Send some traffic to see which replicas answer.</p>
+    } @else {
+      <ul class="bars">
+        @for (p of pods(); track p.pod) {
+          <li>
+            <div class="bar-head">
+              <span class="pod"><i [style.background]="p.color"></i>{{ p.pod }}</span>
+              <span class="meta">{{ p.node }} @if (p.zone !== 'n/a') { · zone {{ p.zone }} }</span>
+            </div>
+            <div class="track">
+              <div class="fill" [style.width.%]="(p.share / maxShare()) * 100" [style.background]="p.color"></div>
+            </div>
+            <div class="bar-foot">
+              <span>{{ p.count | number }} req · {{ p.share * 100 | number: '1.0-1' }}%</span>
+              <span>avg {{ p.avgLatency | number: '1.0-0' }} ms</span>
+            </div>
+          </li>
+        }
+      </ul>
+    }
+  </section>
+
+  <section class="card log">
+    <h2>Latest requests</h2>
+    <table>
+      <thead>
+        <tr><th>#</th><th>Replica</th><th>Node</th><th>Latency</th><th>Status</th><th>Time</th></tr>
+      </thead>
+      <tbody>
+        @for (h of log(); track h.seq) {
+          <tr [class.err]="!h.ok">
+            <td>{{ h.seq }}</td>
+            <td><i class="dot" [style.background]="h.ok ? colorFor(h.pod) : '#e5484d'"></i>{{ h.pod }}</td>
+            <td>{{ h.node }}</td>
+            <td>{{ h.latencyMs | number: '1.0-0' }} ms</td>
+            <td>{{ h.status || 'ERR' }}</td>
+            <td>{{ h.at | date: 'HH:mm:ss.SSS' }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+  </section>
+</main>

@@ -1,0 +1,36 @@
+# Local load-balancing test without Kubernetes:
+#   docker compose up --build
+#   open http://localhost:8080   (or: docker compose up --build --scale api=5)
+#   Port 8080 busy?  $env:WEB_PORT=8090; docker compose up --build   -> http://localhost:8090
+name: load-balancing
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: src/LoadBalancing.Api/Dockerfile
+      args:
+        APP_VERSION: compose
+    image: loadbalancing-api:local
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      NODE_NAME: docker-compose
+    deploy:
+      replicas: 3
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+    # No host port: replicas are only reachable through the web/nginx tier.
+
+  web:
+    build:
+      context: web
+    image: loadbalancing-web:local
+    environment:
+      API_UPSTREAM: http://api:8080
+      DNS_RESOLVER: 127.0.0.11
+    ports:
+      - "${WEB_PORT:-8080}:8080"   # host port; set WEB_PORT if 8080 is taken
+    depends_on:
+      - api

@@ -1,0 +1,29 @@
+# Path 2 — Layer 7 via the AKS application routing add-on (managed ingress-nginx).
+# ingress-nginx talks to pod endpoints directly and balances per HTTP request (round-robin / EWMA),
+# so /api/* here is distributed request-by-request even over a single keep-alive browser connection.
+#   kubectl get ingress -n load-balancing   -> ADDRESS is the ingress public IP
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: load-balancing
+  annotations:
+    nginx.ingress.kubernetes.io/load-balance: round_robin
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  rules:
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

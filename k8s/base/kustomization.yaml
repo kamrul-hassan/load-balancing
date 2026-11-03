@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: load-balancing
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: load-balancing
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - api-hpa.yaml
+  - api-pdb.yaml
+  - web-deployment.yaml
+  - web-service.yaml
+images:
+  - name: loadbalancing-api
+    newTag: latest
+  - name: loadbalancing-web
+    newTag: latest

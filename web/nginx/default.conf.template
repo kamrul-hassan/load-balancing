@@ -1,0 +1,46 @@
+server {
+    listen 8080;
+    server_name _;
+    root /usr/share/nginx/html;
+
+    # Re-resolve the API name every 5s. With Docker Compose `api` resolves to every replica,
+    # and nginx round-robins across all returned addresses. In Kubernetes it resolves to the
+    # Service ClusterIP and kube-proxy spreads connections over the pods.
+    resolver ${DNS_RESOLVER} valid=5s ipv6=off;
+    set $api_upstream ${API_UPSTREAM};
+
+    add_header X-Web-Pod $hostname always;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location /api/ {
+        proxy_pass $api_upstream;
+        # HTTP/1.0 upstream (nginx default) = new TCP connection per request, so L4 balancing
+        # (kube-proxy / Azure Load Balancer) sees every request rather than one long-lived socket.
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 60s;
+        proxy_next_upstream error timeout http_502 http_503;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Web-Pod $hostname always;
+    }
+
+    location ~* \.(?:js|css|woff2?|ico|svg|png)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        add_header X-Web-Pod $hostname always;
+    }
+}

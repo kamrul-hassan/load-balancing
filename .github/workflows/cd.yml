@@ -1,0 +1,126 @@
+name: CD — build, push to ACR, deploy to AKS
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'web/**'
+      - 'k8s/**'
+      - '.github/workflows/cd.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC token for azure/login
+  contents: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+env:
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build-push:
+    name: Build & push images
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to ACR
+        run: az acr login --name ${{ vars.ACR_NAME }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/LoadBalancing.Api/Dockerfile
+          push: true
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/loadbalancing-api:${{ env.IMAGE_TAG }}
+            ${{ vars.ACR_NAME }}.azurecr.io/loadbalancing-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+      - name: Push web image
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          push: true
+          tags: |
+            ${{ vars.ACR_NAME }}.azurecr.io/loadbalancing-web:${{ env.IMAGE_TAG }}
+            ${{ vars.ACR_NAME }}.azurecr.io/loadbalancing-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  deploy:
+    name: Deploy to AKS
+    needs: build-push
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/setup-kubectl@v4
+
+      - uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          cluster-name: ${{ vars.AKS_CLUSTER_NAME }}
+
+      - name: Pin image tags
+        working-directory: k8s/overlays/azure
+        run: |
+          ACR=${{ vars.ACR_NAME }}.azurecr.io
+          kubectl kustomize . > /dev/null   # fail fast on a broken overlay
+          sed -i "s#REPLACE_ACR.azurecr.io#${ACR}#g" kustomization.yaml
+          sed -i "/name: loadbalancing-api/,/newTag/ s#newTag: .*#newTag: ${IMAGE_TAG}#" kustomization.yaml
+          sed -i "/name: loadbalancing-web/,/newTag/ s#newTag: .*#newTag: ${IMAGE_TAG}#" kustomization.yaml
+          cat kustomization.yaml
+
+      - name: Apply manifests
+        run: kubectl apply -k k8s/overlays/azure
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n load-balancing rollout status deployment/api --timeout=5m
+          kubectl -n load-balancing rollout status deployment/web --timeout=5m
+          kubectl -n load-balancing get pods -o wide
+
+      - name: Smoke test — distribution across replicas
+        run: |
+          for i in $(seq 1 60); do
+            IP=$(kubectl -n load-balancing get svc web -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+            [ -n "$IP" ] && break; sleep 5
+          done
+          [ -n "$IP" ] || { echo "No external IP assigned"; exit 1; }
+          echo "Azure Load Balancer IP: http://$IP"
+          for i in $(seq 1 60); do
+            curl -fsS --max-time 5 "http://$IP/api/whoami" | jq -r .podName || true
+          done | sort | uniq -c | tee distribution.txt
+          REPLICAS=$(wc -l < distribution.txt)
+          echo "### Load balancer smoke test" >> $GITHUB_STEP_SUMMARY
+          echo "URL: http://$IP — $REPLICAS replica(s) answered 60 requests" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY; cat distribution.txt >> $GITHUB_STEP_SUMMARY; echo '```' >> $GITHUB_STEP_SUMMARY
+          [ "$REPLICAS" -ge 2 ] || { echo "Traffic was not spread across replicas"; exit 1; }

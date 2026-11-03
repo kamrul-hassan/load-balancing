@@ -1,0 +1,25 @@
+# AKS. The CD workflow pins the images with:
+#   kustomize edit set image loadbalancing-api=<acr>.azurecr.io/loadbalancing-api:<sha>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ingress.yaml
+images:
+  - name: loadbalancing-api
+    newName: REPLACE_ACR.azurecr.io/loadbalancing-api
+    newTag: latest
+  - name: loadbalancing-web
+    newName: REPLACE_ACR.azurecr.io/loadbalancing-web
+    newTag: latest
+patches:
+  - path: web-service-loadbalancer.yaml
+  - target:
+      kind: Deployment
+      name: api
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: AZURE_REGION
+          value: aks

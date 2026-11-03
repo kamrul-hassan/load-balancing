@@ -1,0 +1,24 @@
+# Docker Desktop Kubernetes / minikube / kind.
+#   docker compose build            (builds loadbalancing-api:local + loadbalancing-web:local)
+#   kubectl apply -k k8s/overlays/local
+#   open http://localhost:30080
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+images:
+  - name: loadbalancing-api
+    newTag: local
+  - name: loadbalancing-web
+    newTag: local
+patches:
+  - target:
+      kind: Service
+      name: web
+    patch: |-
+      - op: replace
+        path: /spec/type
+        value: NodePort
+      - op: add
+        path: /spec/ports/0/nodePort
+        value: 30080

@@ -1,0 +1,49 @@
+name: Infrastructure — AKS + ACR (Bicep)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'what-if previews changes; deploy applies them'
+        type: choice
+        options: [what-if, deploy]
+        default: what-if
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  bicep:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: What-if
+        if: inputs.action == 'what-if'
+        run: |
+          az deployment group what-if \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam
+
+      - name: Deploy
+        if: inputs.action == 'deploy'
+        run: |
+          az deployment group create \
+            --name lb-lab-${{ github.run_number }} \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --template-file infra/main.bicep \
+            --parameters infra/main.bicepparam \
+            --query properties.outputs -o json | tee outputs.json
+          ACR=$(jq -r .acrName.value outputs.json)
+          echo "### Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "Set repository variable **ACR_NAME** = \`$ACR\`" >> $GITHUB_STEP_SUMMARY
